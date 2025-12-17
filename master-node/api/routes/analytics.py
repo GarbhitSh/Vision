@@ -12,7 +12,7 @@ import numpy as np
 from config.database import get_db
 from services.analytics_service import AnalyticsService
 from services.analytics import AnalyticsEngine
-from models.database import Detection, Camera
+from models.database import Detection, Camera, EntryExitLog
 from utils.logger import logger
 
 router = APIRouter()
@@ -200,5 +200,60 @@ async def get_heatmap(
         raise
     except Exception as e:
         logger.error(f"Error generating heatmap: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analytics/{camera_id}/entry-exit", response_model=dict)
+async def get_entry_exit_logs(
+    camera_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """
+    Get entry/exit logs for a camera
+    """
+    try:
+        # Verify camera exists
+        camera = db.query(Camera).filter(Camera.camera_id == camera_id).first()
+        if not camera:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        
+        # Get entry/exit logs
+        logs = db.query(EntryExitLog).filter(
+            EntryExitLog.camera_id == camera_id
+        ).order_by(EntryExitLog.timestamp.desc()).limit(limit).all()
+        
+        # Format logs
+        entry_exit_logs = []
+        entry_count = 0
+        exit_count = 0
+        
+        for log in logs:
+            entry_exit_logs.append({
+                "id": log.id,
+                "camera_id": log.camera_id,
+                "zone_id": log.zone_id,
+                "track_id": log.track_id,
+                "event_type": log.event_type,
+                "timestamp": log.timestamp.isoformat()
+            })
+            
+            if log.event_type == "entry":
+                entry_count += 1
+            elif log.event_type == "exit":
+                exit_count += 1
+        
+        return {
+            "camera_id": camera_id,
+            "entry_exit_logs": entry_exit_logs,
+            "total": len(entry_exit_logs),
+            "entry_count": entry_count,
+            "exit_count": exit_count
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting entry/exit logs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

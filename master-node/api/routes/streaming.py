@@ -162,6 +162,10 @@ async def stream_video(
                     for z in zones
                 ]
                 
+                # Ensure analytics has camera_id for heatmap
+                if analytics and not analytics.get("camera_id"):
+                    analytics["camera_id"] = camera_id
+                
                 # Annotate frame
                 annotated_frame = streamer_service.annotate_frame(
                     frame=frame,

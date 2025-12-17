@@ -68,8 +68,10 @@ class StreamerService:
             annotated = self._draw_zones(annotated, zones)
         
         # Draw heatmap overlay
-        if show_heatmap and detections:
-            annotated = self._draw_heatmap_overlay(annotated, detections)
+        if show_heatmap:
+            # Get camera_id from analytics if available
+            camera_id = analytics.get("camera_id") if analytics else None
+            annotated = self._draw_heatmap_overlay(annotated, detections, camera_id=camera_id)
         
         # Draw bounding boxes and track IDs
         if tracks:
@@ -239,19 +241,45 @@ class StreamerService:
         
         return frame
     
-    def _draw_heatmap_overlay(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
-        """Draw heatmap overlay on frame"""
-        if len(detections) == 0:
-            return frame
-        
+    def _draw_heatmap_overlay(self, frame: np.ndarray, detections: List[Dict], camera_id: str = None) -> np.ndarray:
+        """Draw heatmap overlay on frame with temporal accumulation"""
         h, w = frame.shape[:2]
         heatmap = np.zeros((h, w), dtype=np.float32)
         
-        # Create heatmap from detections
-        for det in detections:
-            bbox = det["bbox"]
+        # Try to get historical detections from cache for accumulation
+        all_detections = []
+        if camera_id:
+            try:
+                from services.frame_cache import frame_cache
+                from datetime import datetime, timedelta
+                
+                # Get recent frames from cache (last 5 seconds)
+                with frame_cache.lock:
+                    if camera_id in frame_cache.cache:
+                        now = datetime.utcnow()
+                        for cached_frame in frame_cache.cache[camera_id]:
+                            age = (now - cached_frame["timestamp"]).total_seconds()
+                            if age <= 5.0:  # Last 5 seconds
+                                all_detections.extend(cached_frame.get("detections", []))
+            except Exception:
+                pass
+        
+        # Add current frame detections
+        all_detections.extend(detections)
+        
+        if len(all_detections) == 0:
+            return frame
+        
+        # Create heatmap from all detections with decay based on recency
+        now = datetime.utcnow()
+        for det in all_detections:
+            bbox = det.get("bbox", [])
+            if len(bbox) < 4:
+                continue
+                
             x, y, w_box, h_box = bbox
             
+            # Calculate center point
             cx = int(x + w_box / 2)
             cy = int(y + h_box / 2)
             
@@ -259,36 +287,68 @@ class StreamerService:
             cx = max(0, min(cx, w - 1))
             cy = max(0, min(cy, h - 1))
             
-            # Create Gaussian kernel
-            kernel_size = min(max(int(w_box), int(h_box)), 100)
+            # Calculate kernel size based on bounding box (larger for bigger objects)
+            # Use a more appropriate size: 1.5x the average of width and height
+            avg_size = (w_box + h_box) / 2
+            kernel_size = int(min(max(avg_size * 1.5, 30), 150))  # Min 30, max 150
+            
+            if kernel_size > 0 and kernel_size % 2 == 0:
+                kernel_size += 1  # Make odd for better centering
+            
+            # Create Gaussian kernel with better sigma
             if kernel_size > 0:
                 y_coords, x_coords = np.ogrid[:kernel_size, :kernel_size]
                 center = kernel_size // 2
-                sigma = kernel_size / 3.0
+                # Use sigma = kernel_size / 4 for wider spread
+                sigma = max(kernel_size / 4.0, 5.0)
                 kernel = np.exp(-((x_coords - center)**2 + (y_coords - center)**2) / (2 * sigma**2))
+                
+                # Normalize kernel to have max value of 1
+                kernel = kernel / kernel.max()
+                
+                # Apply decay factor (1.0 for current frame, decreasing for older frames)
+                # For simplicity, we'll use a uniform weight since we can't easily track frame age
+                decay_factor = 1.0
                 
                 y_start = max(0, cy - kernel_size // 2)
                 y_end = min(h, cy + kernel_size // 2)
                 x_start = max(0, cx - kernel_size // 2)
                 x_end = min(w, cx + kernel_size // 2)
                 
-                if y_end > y_start and x_end > x_start:
+                # Calculate kernel slice bounds
+                kernel_y_start = max(0, kernel_size // 2 - cy)
+                kernel_y_end = kernel_y_start + (y_end - y_start)
+                kernel_x_start = max(0, kernel_size // 2 - cx)
+                kernel_x_end = kernel_x_start + (x_end - x_start)
+                
+                # Ensure kernel slice is valid
+                if (y_end > y_start and x_end > x_start and 
+                    kernel_y_end > kernel_y_start and kernel_x_end > kernel_x_start and
+                    kernel_y_end <= kernel_size and kernel_x_end <= kernel_size):
                     heatmap[y_start:y_end, x_start:x_end] += kernel[
-                        :y_end-y_start, :x_end-x_start
-                    ]
+                        kernel_y_start:kernel_y_end, kernel_x_start:kernel_x_end
+                    ] * decay_factor
         
-        # Normalize heatmap
+        # Normalize heatmap with better scaling
         if heatmap.max() > 0:
-            heatmap = heatmap / heatmap.max()
+            # Use power scaling for better visualization (gamma correction)
+            heatmap_normalized = np.power(heatmap / heatmap.max(), 0.7)
+        else:
+            heatmap_normalized = heatmap
         
-        # Apply colormap
+        # Apply colormap (JET for better visibility)
         heatmap_colored = cv2.applyColorMap(
-            (heatmap * 255).astype(np.uint8),
+            (heatmap_normalized * 255).astype(np.uint8),
             cv2.COLORMAP_JET
         )
         
-        # Blend with original frame
-        overlay = cv2.addWeighted(frame, 0.6, heatmap_colored, 0.4, 0)
+        # Convert to BGR if needed (colormap returns BGR)
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            # Blend with original frame - more visible overlay
+            # Use 50/50 blend for better visibility
+            overlay = cv2.addWeighted(frame, 0.5, heatmap_colored, 0.5, 0)
+        else:
+            overlay = frame
         
         return overlay
     
