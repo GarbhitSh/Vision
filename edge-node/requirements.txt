@@ -1,0 +1,9 @@
+Flask
+opencv-python
+Pillow
+python-socketio
+websocket-client
+python-dotenv
+numpy
+requests
+
