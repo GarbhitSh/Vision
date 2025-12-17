@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     DETECTION_NMS_THRESHOLD: float = 0.4
     
     # Tracking Settings
-    TRACK_MAX_AGE: int = 30
+    TRACK_MAX_AGE: int = 5  # Remove tracks after 5 frames of not being detected (faster cleanup)
     TRACK_MIN_HITS: int = 3
     TRACK_IOU_THRESHOLD: float = 0.5
     

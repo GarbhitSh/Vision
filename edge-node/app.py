@@ -134,9 +134,13 @@ def streaming_worker():
     global frames_sent, streaming_active, websocket_client, camera_capture
     
     encoder = FrameEncoder()
-    frame_interval = 1.0 / settings.CAMERA_FPS
+    # Reduce frame rate to match processing speed
+    # If processing takes ~1.5s per frame, send at most 1 frame every 2 seconds
+    # This prevents queue buildup and connection timeouts
+    target_fps = 0.5  # 1 frame every 2 seconds (adjust based on processing speed)
+    frame_interval = 1.0 / target_fps
     
-    logger.info("Streaming worker started")
+    logger.info(f"Streaming worker started (target FPS: {target_fps})")
     
     while streaming_active:
         try:
@@ -164,7 +168,7 @@ def streaming_worker():
                 else:
                     logger.info("Successfully reconnected to master node")
             
-            # Capture frame
+            # Capture frame (read from camera but may skip sending if processing is slow)
             frame = camera_capture.capture_frame()
             if frame is None:
                 time.sleep(frame_interval)
@@ -178,18 +182,18 @@ def streaming_worker():
                 frame_data=frame_bytes,
                 width=camera_capture.width,
                 height=camera_capture.height,
-                fps=camera_capture.fps
+                fps=target_fps  # Use target FPS instead of camera FPS
             ):
                 frames_sent += 1
-                # Log every 100 frames to reduce log spam
-                if frames_sent % 100 == 0:
-                    logger.debug(f"Sent {frames_sent} frames")
+                # Log every 10 frames to monitor progress
+                if frames_sent % 10 == 0:
+                    logger.info(f"Sent {frames_sent} frames (FPS: {target_fps})")
             else:
                 logger.warning("Failed to send frame - connection may be lost")
                 # Small delay before checking connection again
                 time.sleep(0.1)
             
-            # Throttle frame rate
+            # Throttle frame rate to match processing speed
             time.sleep(frame_interval)
             
         except Exception as e:

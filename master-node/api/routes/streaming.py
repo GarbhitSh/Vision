@@ -26,9 +26,9 @@ analytics_service = AnalyticsService()
 def get_latest_detections_and_tracks(
     db: Session,
     camera_id: str,
-    seconds: int = 1
+    seconds: int = 2
 ) -> Tuple[List[Dict], List[Dict]]:
-    """Get latest detections and tracks for camera"""
+    """Get latest detections and tracks for camera - only active tracks from most recent frame"""
     cutoff_time = datetime.utcnow() - timedelta(seconds=seconds)
     
     # Get latest frame
@@ -41,7 +41,7 @@ def get_latest_detections_and_tracks(
     if not latest_frame:
         return [], []
     
-    # Get detections for this frame
+    # Get detections for this frame (only active detections from current frame)
     detections = db.query(Detection).filter(
         Detection.frame_id == latest_frame.id
     ).all()
@@ -56,25 +56,23 @@ def get_latest_detections_and_tracks(
         for d in detections
     ]
     
-    # Get tracks
-    tracks = db.query(Track).filter(
-        Track.camera_id == camera_id,
-        Track.last_seen >= cutoff_time
-    ).all()
+    # Only get tracks that have detections in the latest frame (active tracks)
+    # This ensures we don't show tracks for people who have left
+    active_track_ids = {d.track_id for d in detections if d.track_id is not None}
     
     tracks_list = []
-    for track in tracks:
-        # Get latest detection for this track
-        latest_det = db.query(Detection).filter(
-            Detection.track_id == track.track_id,
-            Detection.camera_id == camera_id
-        ).order_by(Detection.timestamp.desc()).first()
+    for track_id in active_track_ids:
+        # Get the detection for this track from the latest frame
+        track_det = db.query(Detection).filter(
+            Detection.frame_id == latest_frame.id,
+            Detection.track_id == track_id
+        ).first()
         
-        if latest_det:
+        if track_det:
             tracks_list.append({
-                "track_id": track.track_id,
-                "bbox": [latest_det.bbox_x, latest_det.bbox_y, latest_det.bbox_width, latest_det.bbox_height],
-                "confidence": latest_det.confidence,
+                "track_id": track_id,
+                "bbox": [track_det.bbox_x, track_det.bbox_y, track_det.bbox_width, track_det.bbox_height],
+                "confidence": track_det.confidence,
                 "state": "confirmed"
             })
     

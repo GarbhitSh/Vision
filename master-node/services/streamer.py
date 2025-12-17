@@ -120,11 +120,34 @@ class StreamerService:
         return frame
     
     def _draw_tracks(self, frame: np.ndarray, tracks: List[Dict], show_ids: bool = True) -> np.ndarray:
-        """Draw tracked objects with IDs"""
+        """Draw tracked objects with IDs - only draws active tracks"""
+        if not tracks:
+            return frame
+        
+        h, w = frame.shape[:2]
+        
         for track in tracks:
             bbox = track["bbox"]
             track_id = track.get("track_id", 0)
-            x, y, w, h = [int(v) for v in bbox]
+            
+            # Validate bbox coordinates
+            x, y, bbox_w, bbox_h = [float(v) for v in bbox]
+            
+            # Skip if bbox is invalid or outside frame
+            if bbox_w <= 0 or bbox_h <= 0:
+                continue
+            
+            x, y, bbox_w, bbox_h = int(x), int(y), int(bbox_w), int(bbox_h)
+            
+            # Clamp to frame bounds
+            x = max(0, min(x, w - 1))
+            y = max(0, min(y, h - 1))
+            bbox_w = min(bbox_w, w - x)
+            bbox_h = min(bbox_h, h - y)
+            
+            if bbox_w <= 0 or bbox_h <= 0:
+                continue
+            
             confidence = track.get("confidence", 0.0)
             
             # Choose color based on track age or state
@@ -133,10 +156,10 @@ class StreamerService:
                 color = (128, 128, 128)  # Gray for tentative
             
             # Draw bounding box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.rectangle(frame, (x, y), (x + bbox_w, y + bbox_h), color, 2)
             
             # Draw track ID
-            if show_ids:
+            if show_ids and track_id > 0:
                 label = f"ID:{track_id}"
                 label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                 
